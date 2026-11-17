@@ -223,8 +223,8 @@ report = {
     "scores": {"splicing": round(p_splice, 3), "copy_move_matches": n_copy, "ai_generation": round(p_ai, 3)},
     "thresholds": {"splicing": cfg["splice_t"], "copy_move_matches": cfg["copy_move_t"], "ai_generation": cfg["ai_t"]},
     "estimated_edited_area_pct": {
-        "splicing": round(r["splice_pct"], 2) if f_splice else None,
-        "copy_move": round(r["copy_pct"], 2) if f_copy else None,
+        "edited_region": round(r["splice_pct"], 2) if (f_splice or f_copy) else None,
+        "copy_move_matched_areas": round(r["copy_pct"], 2) if f_copy else None,
     },
 }
 st.markdown('<div style="height:1.2rem"></div>', unsafe_allow_html=True)
@@ -255,18 +255,18 @@ if f_splice or f_copy:
     st.markdown('<div class="section-title">Where the edit is</div>', unsafe_allow_html=True)
     d1, d2, d3 = st.columns(3, gap="large")
     with d1:
-        if f_splice:
+        if f_splice or f_copy:                      # the network is our best localiser for both edit types
             st.image(r["splice_ov"])
             note = (f"Estimated by a segmentation network: about {r['splice_pct']:.1f}% of the image. "
                     "An estimate, not an exact outline." if r["splice_pct"] > 0 else
                     "The network found no clear region, so the edit may be small or hard to see.")
-            st.markdown(caption_html("Edited region (splicing)", note), unsafe_allow_html=True)
+            st.markdown(caption_html("Edited region", note), unsafe_allow_html=True)
     with d2:
         if f_copy:
             st.image(r["copy_ov"])
-            note = (f"Shaded areas cover the matched keypoints on both sides of the copy, about "
-                    f"{r['copy_pct']:.1f}% of the image. This is an approximate region, not an outline."
+            note = (f"Shaded areas cover the matching keypoints on both sides of the copy (the original and "
+                    f"the duplicate), about {r['copy_pct']:.1f}% of the image. Only one side is the edit."
                     if r["copy_pct"] > 0 else "Too few matches to outline a region.")
-            st.markdown(caption_html("Cloned regions (copy-move)", note), unsafe_allow_html=True)
+            st.markdown(caption_html("Matching areas (copy-move)", note), unsafe_allow_html=True)
 
 st.markdown(FINE, unsafe_allow_html=True)
