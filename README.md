@@ -37,7 +37,7 @@ The app opens at http://localhost:8501.
 | `config.json` | Thresholds for the three checks, plus the U-Net mask threshold (`mask_t`) |
 | `splicing_model.keras` | Splicing classifier (ELA + CNN) |
 | `ai_model_v2.keras` | AI-generated image classifier |
-| `splice_unet.keras` | U-Net for pixel-level splicing localization |
+| `splice_unet_v2.keras` | U-Net (EfficientNet-B0 encoder, 384 px) for pixel-level splicing localization |
 | `Image_forgery_detection.ipynb` | Colab notebook: data, training, evaluation |
 
 ## Data
@@ -50,4 +50,4 @@ The app opens at http://localhost:8501.
 - Scores are statistical indicators, not proof.
 - CASIA authentic and tampered images can differ in file format and compression, so part of the measured accuracy may come from that rather than from the edits.
 - ELA works best on JPEG and is weakened by heavy compression, resizing and screenshots.
-- The edited-region maps are estimates. On CASIA test images the U-Net reached a mean pixel IoU of 0.49 and F1 of 0.57 (median F1 0.72), and it missed about one edit in five entirely, more often the smallest ones.
+- The edited-region maps are estimates. On CASIA test images the U-Net reached a mean pixel IoU of 0.62 and F1 of 0.70 (median F1 0.85, 0.81 on splicing, 0.64 on copy-move), and it missed about one edit in nine entirely, mostly the smallest ones (edits under 1% of the image: about one in three missed).

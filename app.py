@@ -13,7 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 def load():
     splice = tf.keras.models.load_model(os.path.join(HERE, "splicing_model.keras"))
     ai = tf.keras.models.load_model(os.path.join(HERE, "ai_model_v2.keras"))
-    unet = tf.keras.models.load_model(os.path.join(HERE, "splice_unet.keras"), compile=False)
+    unet = tf.keras.models.load_model(os.path.join(HERE, "splice_unet_v2.keras"), compile=False)
     cfg = json.load(open(os.path.join(HERE, "config.json")))
     return splice, ai, unet, cfg
 
@@ -91,8 +91,12 @@ def evidence(img, rgb, good, max_side=800):
 
 # ---------- Pixel-level localisation ----------
 def splice_mask(img, size, thr, min_frac=0.0005):
-    """U-Net on a 256x256 ELA image -> mask of the estimated edited pixels, resized to `size` = (w, h)."""
-    p = unet_model.predict(ela_input(img, size=256).astype(np.float32)[None], verbose=0)[0, :, :, 0]
+    """U-Net (EfficientNet-B0 encoder) on a 384x384 ELA image -> mask of the estimated edited pixels,
+    resized to `size` = (w, h). The prediction is averaged with that of the mirrored image."""
+    x = ela_input(img, size=384).astype(np.float32)
+    batch = np.stack([x, x[:, ::-1]])
+    pr = unet_model.predict(batch, verbose=0)[..., 0]
+    p = (pr[0] + pr[1][:, ::-1]) / 2
     m = (cv2.resize(p, size, interpolation=cv2.INTER_LINEAR) > thr).astype(np.uint8)
     n, lab, stats, _ = cv2.connectedComponentsWithStats(m)      # drop tiny specks
     for i in range(1, n):
@@ -140,7 +144,7 @@ def analyse(data: bytes):
     n_copy, good, _ = copy_move_score(rgb)
     p_ai = ai_score(img)
     orig, heat, cm = evidence(img, rgb, good)
-    sm = splice_mask(img, (orig.shape[1], orig.shape[0]), cfg.get("mask_t", 0.4))
+    sm = splice_mask(img, (orig.shape[1], orig.shape[0]), cfg.get("mask_t", 0.3))
     cmk = copy_regions(good, orig.shape)
     return dict(p_splice=p_splice, n_copy=int(n_copy), p_ai=p_ai,
                 orig=orig, heat=heat, cm=cm, size=img.size, fmt=fmt,
