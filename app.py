@@ -13,11 +13,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 def load():
     splice = tf.keras.models.load_model(os.path.join(HERE, "splicing_model.keras"))
     ai = tf.keras.models.load_model(os.path.join(HERE, "ai_model_v2.keras"))
+    unet = tf.keras.models.load_model(os.path.join(HERE, "splice_unet.keras"), compile=False)
     cfg = json.load(open(os.path.join(HERE, "config.json")))
-    return splice, ai, cfg
+    return splice, ai, unet, cfg
 
 
-splice_model, ai_model, cfg = load()
+splice_model, ai_model, unet_model, cfg = load()
 
 
 # ---------- Detector 1: splicing (ELA + CNN) ----------
@@ -88,6 +89,46 @@ def evidence(img, rgb, good, max_side=800):
     return orig, heat, cm
 
 
+# ---------- Pixel-level localisation ----------
+def splice_mask(img, size, thr, min_frac=0.0005):
+    """U-Net on a 256x256 ELA image -> mask of the estimated edited pixels, resized to `size` = (w, h)."""
+    p = unet_model.predict(ela_input(img, size=256).astype(np.float32)[None], verbose=0)[0, :, :, 0]
+    m = (cv2.resize(p, size, interpolation=cv2.INTER_LINEAR) > thr).astype(np.uint8)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(m)      # drop tiny specks
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] < min_frac * m.size:
+            m[lab == i] = 0
+    return m * 255
+
+
+def copy_regions(good, shape):
+    """Approximate cloned regions: filled hull of the matched keypoints on each side of the copy."""
+    h, w = shape[:2]
+    mask = np.zeros((h, w), np.uint8)
+    if len(good) < 3:
+        return mask
+    p1 = np.array([p[0] for p in good]); p2 = np.array([p[1] for p in good])
+    v = p2 - p1
+    ref = v[0] / (np.linalg.norm(v[0]) + 1e-9)
+    flip = (v @ ref) < 0                                         # each pair appears in both directions
+    a = np.where(flip[:, None], p2, p1); b = np.where(flip[:, None], p1, p2)
+    for pts in (a, b):
+        pts = np.unique(pts.astype(np.int32), axis=0)
+        if len(pts) >= 3:
+            cv2.fillConvexPoly(mask, cv2.convexHull(pts), 255)
+    return cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
+
+
+def tint(rgb, mask, color, alpha=0.45):
+    out = rgb.astype(np.float32)
+    m = mask > 0
+    out[m] = (1 - alpha) * out[m] + alpha * np.array(color, np.float32)
+    out = out.astype(np.uint8)
+    cnts, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(out, cnts, -1, color, 2)
+    return out
+
+
 # ---------- One cached analysis per uploaded file ----------
 @st.cache_data(show_spinner=False, max_entries=8)
 def analyse(data: bytes):
@@ -99,8 +140,12 @@ def analyse(data: bytes):
     n_copy, good, _ = copy_move_score(rgb)
     p_ai = ai_score(img)
     orig, heat, cm = evidence(img, rgb, good)
+    sm = splice_mask(img, (orig.shape[1], orig.shape[0]), cfg.get("mask_t", 0.4))
+    cmk = copy_regions(good, orig.shape)
     return dict(p_splice=p_splice, n_copy=int(n_copy), p_ai=p_ai,
-                orig=orig, heat=heat, cm=cm, size=img.size, fmt=fmt)
+                orig=orig, heat=heat, cm=cm, size=img.size, fmt=fmt,
+                splice_ov=tint(orig, sm, (214, 58, 108)), splice_pct=float((sm > 0).mean() * 100),
+                copy_ov=tint(orig, cmk, (200, 138, 40)), copy_pct=float((cmk > 0).mean() * 100))
 
 
 # ---------- Page ----------
@@ -173,6 +218,10 @@ report = {
     "flagged_checks": flagged,
     "scores": {"splicing": round(p_splice, 3), "copy_move_matches": n_copy, "ai_generation": round(p_ai, 3)},
     "thresholds": {"splicing": cfg["splice_t"], "copy_move_matches": cfg["copy_move_t"], "ai_generation": cfg["ai_t"]},
+    "estimated_edited_area_pct": {
+        "splicing": round(r["splice_pct"], 2) if f_splice else None,
+        "copy_move": round(r["copy_pct"], 2) if f_copy else None,
+    },
 }
 st.markdown('<div style="height:1.2rem"></div>', unsafe_allow_html=True)
 st.download_button("Save report", data=json.dumps(report, indent=2),
@@ -196,5 +245,24 @@ with c3:
     st.markdown(caption_html("Duplicate matches",
                              "Lines join regions that match each other. No lines means no duplicated region "
                              "was found."), unsafe_allow_html=True)
+
+# estimated edited regions, only for the checks that fired
+if f_splice or f_copy:
+    st.markdown('<div class="section-title">Where the edit is</div>', unsafe_allow_html=True)
+    d1, d2, d3 = st.columns(3, gap="large")
+    with d1:
+        if f_splice:
+            st.image(r["splice_ov"])
+            note = (f"Estimated by a segmentation network: about {r['splice_pct']:.1f}% of the image. "
+                    "An estimate, not an exact outline." if r["splice_pct"] > 0 else
+                    "The network found no clear region, so the edit may be small or hard to see.")
+            st.markdown(caption_html("Edited region (splicing)", note), unsafe_allow_html=True)
+    with d2:
+        if f_copy:
+            st.image(r["copy_ov"])
+            note = (f"Shaded areas cover the matched keypoints on both sides of the copy, about "
+                    f"{r['copy_pct']:.1f}% of the image. This is an approximate region, not an outline."
+                    if r["copy_pct"] > 0 else "Too few matches to outline a region.")
+            st.markdown(caption_html("Cloned regions (copy-move)", note), unsafe_allow_html=True)
 
 st.markdown(FINE, unsafe_allow_html=True)

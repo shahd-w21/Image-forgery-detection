@@ -69,5 +69,5 @@ EXPLAIN = """
 """
 
 FINE = """
-<div class="fine">Scores are statistical indicators, not proof. Heavy compression, resizing, and screenshots can hide forgery clues. The AI check misses about one in four images from the generators it was trained on, so newer generators may pass undetected.</div>
+<div class="fine">Scores are statistical indicators, not proof. Heavy compression, resizing, and screenshots can hide forgery clues. The AI check misses about one in four images from the generators it was trained on, so newer generators may pass undetected. The edited-region maps are estimates: in our tests the splicing map missed about one edit in five entirely, and more often the smallest ones.</div>
 """
