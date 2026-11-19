@@ -4,21 +4,26 @@ from PIL import Image, ImageOps
 import tensorflow as tf
 
 from design import (load_css, join_names, human_size, check_html, meta_html, caption_html,
-                    HERO, EXPLAIN, FINE)
+                    HERO, EXPLAIN, FINE, LAYERS_INTRO)
+import forensics
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 @st.cache_resource
 def load():
-    splice = tf.keras.models.load_model(os.path.join(HERE, "splicing_model.keras"))
-    ai = tf.keras.models.load_model(os.path.join(HERE, "ai_model_v2.keras"))
-    unet = tf.keras.models.load_model(os.path.join(HERE, "splice_unet_v2.keras"), compile=False)
+    m = lambda f, **kw: tf.keras.models.load_model(os.path.join(HERE, f), **kw)
+    splice = m("splicing_model.keras")
+    ai = m("ai_model_v2.keras")
+    # Edited-region localizers, each used for the edit type it scored best on (CASIA v2 test set):
+    #   noise: RGB + SRM noise residuals, best for splicing (F1 0.87 vs 0.85) and 5x fewer false marks
+    #   ela:   ELA image, best for copy-move (F1 0.69 vs 0.60) and small edits
+    loc = {"noise": m("localizer_noise.keras", compile=False), "ela": m("localizer_ela.keras", compile=False)}
     cfg = json.load(open(os.path.join(HERE, "config.json")))
-    return splice, ai, unet, cfg
+    return splice, ai, loc, cfg
 
 
-splice_model, ai_model, unet_model, cfg = load()
+splice_model, ai_model, localizers, cfg = load()
 
 
 # ---------- Detector 1: splicing (ELA + CNN) ----------
@@ -90,12 +95,16 @@ def evidence(img, rgb, good, max_side=800):
 
 
 # ---------- Pixel-level localisation ----------
-def splice_mask(img, size, thr, min_frac=0.0005):
-    """U-Net (EfficientNet-B0 encoder) on a 384x384 ELA image -> mask of the estimated edited pixels,
-    resized to `size` = (w, h). The prediction is averaged with that of the mirrored image."""
-    x = ela_input(img, size=384).astype(np.float32)
+def edit_mask(img, rgb, kind, size, thr, min_frac=0.0005):
+    """Segmentation network -> mask of the estimated edited pixels, resized to `size` = (w, h).
+    kind 'noise' sees the RGB image (it computes the noise residuals itself); kind 'ela' sees the ELA
+    image. Both work at 384x384, exactly as trained. The prediction is averaged with the mirrored one."""
+    if kind == "noise":
+        x = cv2.resize(rgb, (384, 384), interpolation=cv2.INTER_AREA).astype(np.float32)
+    else:
+        x = ela_input(img, size=384).astype(np.float32)
     batch = np.stack([x, x[:, ::-1]])
-    pr = unet_model.predict(batch, verbose=0)[..., 0]
+    pr = localizers[kind].predict(batch, verbose=0)[..., 0]
     p = (pr[0] + pr[1][:, ::-1]) / 2
     m = (cv2.resize(p, size, interpolation=cv2.INTER_LINEAR) > thr).astype(np.uint8)
     n, lab, stats, _ = cv2.connectedComponentsWithStats(m)      # drop tiny specks
@@ -123,6 +132,20 @@ def copy_regions(good, shape):
     return cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
 
 
+def cutout(rgb, mask, pad=0.08):
+    """The edited pixels alone: everything else made transparent, cropped to the region with a margin."""
+    m = mask > 0
+    if not m.any():
+        return None
+    ys, xs = np.nonzero(m)
+    h, w = m.shape
+    py, px = int((ys.max() - ys.min() + 1) * pad) + 4, int((xs.max() - xs.min() + 1) * pad) + 4
+    y0, y1 = max(0, ys.min() - py), min(h, ys.max() + py + 1)
+    x0, x1 = max(0, xs.min() - px), min(w, xs.max() + px + 1)
+    rgba = np.dstack([rgb, (m * 255).astype(np.uint8)])
+    return rgba[y0:y1, x0:x1]
+
+
 def tint(rgb, mask, color, alpha=0.45):
     out = rgb.astype(np.float32)
     m = mask > 0
@@ -144,12 +167,38 @@ def analyse(data: bytes):
     n_copy, good, _ = copy_move_score(rgb)
     p_ai = ai_score(img)
     orig, heat, cm = evidence(img, rgb, good)
-    sm = splice_mask(img, (orig.shape[1], orig.shape[0]), cfg.get("mask_t", 0.3))
-    cmk = copy_regions(good, orig.shape)
-    return dict(p_splice=p_splice, n_copy=int(n_copy), p_ai=p_ai,
-                orig=orig, heat=heat, cm=cm, size=img.size, fmt=fmt,
-                splice_ov=tint(orig, sm, (214, 58, 108)), splice_pct=float((sm > 0).mean() * 100),
-                copy_ov=tint(orig, cmk, (200, 138, 40)), copy_pct=float((cmk > 0).mean() * 100))
+    size = (orig.shape[1], orig.shape[0])
+
+    # Pick the localizer for the edit type that was flagged. The copy-move check (SIFT) is the more
+    # specific of the two, so when it fires the edit is most likely a clone -> ELA localizer.
+    kind = "ela" if n_copy > cfg["copy_move_t"] else ("noise" if p_splice > cfg["splice_t"] else None)
+    out = dict(p_splice=p_splice, n_copy=int(n_copy), p_ai=p_ai, orig=orig, heat=heat, cm=cm,
+               size=img.size, fmt=fmt, loc_kind=kind)
+    if kind:
+        em = edit_mask(img, rgb, kind, size, cfg[f"mask_t_{kind}"])
+        buf = io.BytesIO(); Image.fromarray(em).save(buf, "PNG")
+        out.update(edit_ov=tint(orig, em, (214, 58, 108)), edit_pct=float((em > 0).mean() * 100),
+                   edit_cut=cutout(orig, em), edit_mask_png=buf.getvalue())
+    if kind == "ela":
+        cmk = copy_regions(good, orig.shape)
+        out.update(copy_ov=tint(orig, cmk, (200, 138, 40)), copy_pct=float((cmk > 0).mean() * 100))
+    return out
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def extra_layers(data: bytes):
+    """The optional forensic layers, computed on the full-resolution image only when asked for."""
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+    rgb = np.asarray(img)
+    h, w = rgb.shape[:2]
+    k = min(1.0, 800 / max(h, w))
+    size = (max(1, int(w * k)), max(1, int(h * k)))
+    small = cv2.resize(rgb, size, interpolation=cv2.INTER_AREA) if k < 1 else rgb.copy()
+    noise_img, noise_pct = forensics.noise_map(rgb, size)
+    grid_img, grid_pct, grid_note = forensics.jpeg_grid(rgb, small)
+    cfa_img, cfa_pct, cfa_note = forensics.cfa_map(rgb, small)
+    return dict(noise=noise_img, noise_pct=noise_pct, grid=grid_img, grid_pct=grid_pct, grid_note=grid_note,
+                fft=forensics.spectrum(rgb), cfa=cfa_img, cfa_pct=cfa_pct, cfa_note=cfa_note)
 
 
 # ---------- Page ----------
@@ -222,9 +271,11 @@ report = {
     "flagged_checks": flagged,
     "scores": {"splicing": round(p_splice, 3), "copy_move_matches": n_copy, "ai_generation": round(p_ai, 3)},
     "thresholds": {"splicing": cfg["splice_t"], "copy_move_matches": cfg["copy_move_t"], "ai_generation": cfg["ai_t"]},
-    "estimated_edited_area_pct": {
-        "edited_region": round(r["splice_pct"], 2) if (f_splice or f_copy) else None,
-        "copy_move_matched_areas": round(r["copy_pct"], 2) if f_copy else None,
+    "edited_region": {
+        "localizer": {"ela": "ELA segmentation network (copy-move)",
+                      "noise": "noise segmentation network (splicing)"}.get(r["loc_kind"]),
+        "estimated_area_pct": round(r["edit_pct"], 2) if r["loc_kind"] else None,
+        "copy_move_matched_area_pct": round(r["copy_pct"], 2) if r["loc_kind"] == "ela" else None,
     },
 }
 st.markdown('<div style="height:1.2rem"></div>', unsafe_allow_html=True)
@@ -250,23 +301,68 @@ with c3:
                              "Lines join regions that match each other. No lines means no duplicated region "
                              "was found."), unsafe_allow_html=True)
 
-# estimated edited regions, only for the checks that fired
-if f_splice or f_copy:
+# estimated edited region, only when splicing or copy-move fired, with the original beside it
+if r["loc_kind"]:
     st.markdown('<div class="section-title">Where the edit is</div>', unsafe_allow_html=True)
     d1, d2, d3 = st.columns(3, gap="large")
     with d1:
-        if f_splice or f_copy:                      # the network is our best localiser for both edit types
-            st.image(r["splice_ov"])
-            note = (f"Estimated by a segmentation network: about {r['splice_pct']:.1f}% of the image. "
-                    "An estimate, not an exact outline." if r["splice_pct"] > 0 else
-                    "The network found no clear region, so the edit may be small or hard to see.")
-            st.markdown(caption_html("Edited region", note), unsafe_allow_html=True)
+        st.image(r["orig"])
+        st.markdown(caption_html("Original", "For comparison with the marked region."), unsafe_allow_html=True)
     with d2:
-        if f_copy:
+        st.image(r["edit_ov"])
+        how = ("Copy-move was flagged, so this map comes from the network that reads the compression "
+               "pattern, which did best on cloned regions in our tests."
+               if r["loc_kind"] == "ela" else
+               "Splicing was flagged, so this map comes from the network that reads the sensor noise, "
+               "which did best on pasted content in our tests.")
+        note = (f"About {r['edit_pct']:.1f}% of the image. {how} An estimate, not an exact outline."
+                if r["edit_pct"] > 0 else
+                f"No clear region found, so the edit may be small or hard to see. {how}")
+        st.markdown(caption_html("Edited region", note), unsafe_allow_html=True)
+    with d3:
+        if r["edit_cut"] is not None:
+            st.image(r["edit_cut"])
+            st.markdown(caption_html("Edited pixels alone",
+                                     "Only the pixels the network marked as edited, cut out of the image and "
+                                     "enlarged. Everything else is removed."), unsafe_allow_html=True)
+            st.download_button("Save the mask (PNG)", data=r["edit_mask_png"],
+                               file_name="edited_region_mask.png", mime="image/png")
+    if r["loc_kind"] == "ela":
+        f1, _, _ = st.columns(3, gap="large")
+        with f1:
             st.image(r["copy_ov"])
             note = (f"Shaded areas cover the matching keypoints on both sides of the copy (the original and "
                     f"the duplicate), about {r['copy_pct']:.1f}% of the image. Only one side is the edit."
                     if r["copy_pct"] > 0 else "Too few matches to outline a region.")
             st.markdown(caption_html("Matching areas (copy-move)", note), unsafe_allow_html=True)
+
+# optional forensic layers: for inspection only, they never change the verdict
+st.markdown('<div class="section-title">Extra forensic layers</div>', unsafe_allow_html=True)
+st.markdown(LAYERS_INTRO, unsafe_allow_html=True)
+if st.toggle("Show the extra layers"):
+    with st.spinner("Running the extra layers"):
+        x = extra_layers(up.getvalue())
+    e1, e2 = st.columns(2, gap="large")
+    with e1:
+        st.image(x["noise"])
+        st.markdown(caption_html(
+            "Noise level",
+            "How much fine grain each area has compared with the image as a whole: dark is less, bright is more. "
+            "A patch that stands out from similar surroundings may come from another camera or have been smoothed. "
+            "Flat areas such as sky are naturally darker."), unsafe_allow_html=True)
+    with e2:
+        st.image(x["grid"])
+        st.markdown(caption_html("JPEG block grid", x["grid_note"]), unsafe_allow_html=True)
+    e3, e4 = st.columns(2, gap="large")
+    with e3:
+        st.image(x["cfa"])
+        st.markdown(caption_html("Camera sensor pattern (CFA)", x["cfa_note"]), unsafe_allow_html=True)
+    with e4:
+        st.image(x["fft"])
+        st.markdown(caption_html(
+            "Frequency spectrum",
+            "The fine detail of the image's centre, broken into repeating patterns. A plain glow fading from "
+            "the centre is normal. Regular bright dots away from the centre point to resizing, upscaling or some "
+            "AI generators, but fabrics, grids and screens produce them too."), unsafe_allow_html=True)
 
 st.markdown(FINE, unsafe_allow_html=True)

@@ -69,5 +69,9 @@ EXPLAIN = """
 """
 
 FINE = """
-<div class="fine">Scores are statistical indicators, not proof. Heavy compression, resizing, and screenshots can hide forgery clues. The AI check misses about one in four images from the generators it was trained on, so newer generators may pass undetected. The edited-region maps are estimates: in our tests the splicing map missed about one edit in nine entirely, and more often the smallest ones.</div>
+<div class="fine">Scores are statistical indicators, not proof. Heavy compression, resizing, and screenshots can hide forgery clues. The AI check misses about one in four images from the generators it was trained on, so newer generators may pass undetected. The edited-region maps are estimates: in our tests they missed about one edit in seven entirely, and about a third of the smallest ones.</div>
+"""
+
+LAYERS_INTRO = """
+<p class="hero-sub" style="max-width:70ch;margin-bottom:1rem">Four classic forensic views of the full-resolution image: noise level, JPEG block grid, camera sensor pattern, and frequency spectrum. They use no trained model and do not affect the verdict. Ordinary image content can trigger each of them, so treat them as leads to look at, not findings.</p>
 """
