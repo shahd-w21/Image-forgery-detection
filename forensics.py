@@ -107,6 +107,42 @@ def jpeg_grid(rgb, small, win=32, max_side=2048):
     return img, pct, note
 
 
+# ---------- 5. Edge and texture sharpness ----------
+def sharpness_map(rgb, small, block=32):
+    """How crisp the edges and texture are in each area, compared with the rest of the image.
+    Per block: the share of edge strength lost after a slight blur (sharp detail loses a lot, soft or
+    resampled detail little), which depends on crispness rather than on how much detail there is.
+    Shown as a continuous map over a grey copy of the image: cyan = softer than typical for this image,
+    magenta = sharper, uncoloured = typical or too flat to judge.
+    Weak on its own: in synthetic tests a 2x-upscaled paste reached the 'clearly softer' range in only
+    ~20% of its blocks while ~7% of blocks in authentic photos did too, because focus and depth of field
+    vary naturally. Useful only for large, obvious differences."""
+    g = _gray(rgb).astype(np.float32)
+    mag = lambda a: np.abs(cv2.Sobel(a, cv2.CV_32F, 1, 0)) + np.abs(cv2.Sobel(a, cv2.CV_32F, 0, 1))
+    s0 = _blocks(mag(g), block).sum(axis=(1, 3))
+    s1 = _blocks(mag(cv2.GaussianBlur(g, (0, 0), 1.0)), block).sum(axis=(1, 3))
+    textured = s0 / (block * block) > 20                   # flat areas have no edges to judge
+    if textured.sum() < 12:
+        return small.copy(), "Too little edge detail to compare."
+    sharp = 1 - s1 / (s0 + 1e-6)
+    v = sharp[textured]
+    med = np.median(v); mad = 1.4826 * np.median(np.abs(v - med)) + 1e-6
+    z = np.where(textured, np.clip((sharp - med) / mad / 4, -1, 1), 0)    # -1 much softer .. +1 much sharper
+    h, w = small.shape[:2]
+    H, W = g.shape
+    zf = np.zeros((H, W), np.float32)
+    zf[:z.shape[0] * block, :z.shape[1] * block] = z.repeat(block, 0).repeat(block, 1)
+    zs = cv2.resize(zf, (w, h), interpolation=cv2.INTER_NEAREST)[..., None]
+    base = np.repeat(cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)[..., None], 3, axis=2).astype(np.float32) * 0.75 + 40
+    col = np.where(zs < 0, np.array((40, 150, 200), np.float32), np.array(MAGENTA, np.float32))
+    a = np.abs(zs) * 0.85
+    img = (base * (1 - a) + col * a).astype(np.uint8)
+    return img, ("Cyan areas have softer edges and texture than is typical for this image, magenta areas "
+                 "sharper. A pasted object that was resized often looks softer than its surroundings. This "
+                 "is the weakest layer: focus, depth of field and motion blur cause the same colours, so only "
+                 "a large patch that clearly breaks with similar surroundings is worth a closer look.")
+
+
 # ---------- 3. Frequency spectrum ----------
 def spectrum(rgb, size=360, crop=1024):
     """Log-magnitude Fourier spectrum of the image's fine detail (centre crop, full resolution).

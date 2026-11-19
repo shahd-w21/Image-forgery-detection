@@ -19,7 +19,7 @@ When splicing or copy-move fires, the app shows the original next to an estimate
 
 When copy-move fires, the matched keypoints on each side of the copy are also outlined as two approximate regions. The copy-move check (SIFT) takes priority because it rarely fires on authentic images, while the splicing classifier also fires on many copy-move edits.
 
-An optional **Extra forensic layers** section adds four classic views of the full-resolution image. They use no trained model and never change the verdict:
+An optional **Extra forensic layers** section adds five classic views of the full-resolution image. They use no trained model and never change the verdict:
 
 | Layer | What it shows | When it helps |
 | --- | --- | --- |
@@ -27,6 +27,7 @@ An optional **Extra forensic layers** section adds four classic views of the ful
 | JPEG block grid | Areas carrying a second, shifted 8×8 JPEG grid | Pastes from another JPEG, only if the final image was saved losslessly (PNG, TIFF, BMP). In synthetic tests: ~80% of the paste found, no false marks on 60 authentic photos; a final JPEG save erases the trace |
 | Camera sensor pattern (CFA) | Areas missing the colour-filter interpolation pattern | Camera originals only; resized, web-compressed or generated images have no pattern. In a synthetic test: 99% of a paste marked, under 1% elsewhere |
 | Frequency spectrum | Repeating patterns in the fine detail | Resizing, upscaling, some AI generators; also triggered by fabrics, grids and screens |
+| Edge and texture sharpness | Areas whose edges are much softer or sharper than is typical for the image | Large resized or sharpened pastes only. The weakest layer: in a synthetic test only ~20% of a 2x-upscaled paste stood out, against ~7% of areas in authentic photos, because focus and depth of field vary naturally |
 
 ## Run the app
 
@@ -44,7 +45,7 @@ The app opens at http://localhost:8501.
 | File | Purpose |
 | --- | --- |
 | `app.py` | Models, the detectors, region estimation and page flow |
-| `forensics.py` | The extra forensic layers (noise, JPEG grid, CFA, spectrum) |
+| `forensics.py` | The extra forensic layers (noise, JPEG grid, CFA, spectrum, sharpness) |
 | `design.py` | HTML pieces and page text |
 | `style.css` | Colours, fonts and layout |
 | `.streamlit/config.toml` | Forces light mode |

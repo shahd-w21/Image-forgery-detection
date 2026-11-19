@@ -197,8 +197,10 @@ def extra_layers(data: bytes):
     noise_img, noise_pct = forensics.noise_map(rgb, size)
     grid_img, grid_pct, grid_note = forensics.jpeg_grid(rgb, small)
     cfa_img, cfa_pct, cfa_note = forensics.cfa_map(rgb, small)
+    sharp_img, sharp_note = forensics.sharpness_map(rgb, small)
     return dict(noise=noise_img, noise_pct=noise_pct, grid=grid_img, grid_pct=grid_pct, grid_note=grid_note,
-                fft=forensics.spectrum(rgb), cfa=cfa_img, cfa_pct=cfa_pct, cfa_note=cfa_note)
+                fft=forensics.spectrum(rgb), cfa=cfa_img, cfa_pct=cfa_pct, cfa_note=cfa_note,
+                sharp=sharp_img, sharp_note=sharp_note)
 
 
 # ---------- Page ----------
@@ -364,5 +366,9 @@ if st.toggle("Show the extra layers"):
             "The fine detail of the image's centre, broken into repeating patterns. A plain glow fading from "
             "the centre is normal. Regular bright dots away from the centre point to resizing, upscaling or some "
             "AI generators, but fabrics, grids and screens produce them too."), unsafe_allow_html=True)
+    e5, _ = st.columns(2, gap="large")
+    with e5:
+        st.image(x["sharp"])
+        st.markdown(caption_html("Edge and texture sharpness", x["sharp_note"]), unsafe_allow_html=True)
 
 st.markdown(FINE, unsafe_allow_html=True)

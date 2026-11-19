@@ -73,5 +73,5 @@ FINE = """
 """
 
 LAYERS_INTRO = """
-<p class="hero-sub" style="max-width:70ch;margin-bottom:1rem">Four classic forensic views of the full-resolution image: noise level, JPEG block grid, camera sensor pattern, and frequency spectrum. They use no trained model and do not affect the verdict. Ordinary image content can trigger each of them, so treat them as leads to look at, not findings.</p>
+<p class="hero-sub" style="max-width:70ch;margin-bottom:1rem">Five classic forensic views of the full-resolution image: noise level, JPEG block grid, camera sensor pattern, frequency spectrum, and edge and texture sharpness. They use no trained model and do not affect the verdict. Ordinary image content can trigger each of them, so treat them as leads to look at, not findings.</p>
 """
